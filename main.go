@@ -29,6 +29,7 @@ import (
 	"github.com/open-policy-agent/gatekeeper/pkg/controller"
 	configController "github.com/open-policy-agent/gatekeeper/pkg/controller/config"
 	"github.com/open-policy-agent/gatekeeper/pkg/controller/constrainttemplate"
+	"github.com/open-policy-agent/gatekeeper/pkg/dynamiccache"
 	"github.com/open-policy-agent/gatekeeper/pkg/metrics"
 	"github.com/open-policy-agent/gatekeeper/pkg/target"
 	"github.com/open-policy-agent/gatekeeper/pkg/upgrade"
@@ -84,6 +85,7 @@ func main() {
 	ctrl.SetLogger(crzap.Logger(true))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		NewCache:               dynamiccache.New,
 		Scheme:                 scheme,
 		MetricsBindAddress:     *metricsAddr,
 		LeaderElection:         false,
@@ -108,7 +110,7 @@ func main() {
 		setupLog.Error(err, "unable to set up OPA client")
 	}
 
-	wm, err := watch.New(mgr.GetConfig())
+	wm, err := watch.New(mgr, mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "unable to create watch manager")
 		os.Exit(1)

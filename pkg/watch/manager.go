@@ -23,6 +23,7 @@ var log = logf.Log.WithName("watchManager")
 
 // WatchManager allows us to dynamically configure what kinds are watched
 type Manager struct {
+	mgr        manger.Manager
 	newMgrFn   func(*Manager) (manager.Manager, error)
 	startedMux sync.RWMutex
 	stopper    func()
@@ -50,12 +51,13 @@ func newDiscovery(c *rest.Config) (Discovery, error) {
 
 type AddFunction func(manager.Manager, schema.GroupVersionKind, *ControllerSwitch) error
 
-func New(cfg *rest.Config) (*Manager, error) {
+func New(mgr manager.Manager, cfg *rest.Config) (*Manager, error) {
 	metrics, err := newStatsReporter()
 	if err != nil {
 		return nil, err
 	}
 	wm := &Manager{
+		mgr:          mgr,
 		newMgrFn:     newMgr,
 		stopper:      func() {},
 		managedKinds: newRecordKeeper(),
@@ -164,20 +166,21 @@ func (wm *Manager) updateManager() (bool, error) {
 // benefit compared to restarting the manager every time a controller changes the watch
 // of placing an upper bound on how often the manager restarts.
 func (wm *Manager) Start(done <-chan struct{}) error {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			log.Info("watch manager shutting down")
-			wm.close()
-			return nil
-		case <-ticker.C:
-			if _, err := wm.updateOrPause(); err != nil {
-				log.Error(err, "error in updateManagerLoop")
-			}
-		}
-	}
+	//ticker := time.NewTicker(5 * time.Second)
+	//defer ticker.Stop()
+	//for {
+	//	select {
+	//	case <-done:
+	//		log.Info("watch manager shutting down")
+	//		wm.close()
+	//		return nil
+	//	case <-ticker.C:
+	//		if _, err := wm.updateOrPause(); err != nil {
+	//			log.Error(err, "error in updateManagerLoop")
+	//		}
+	//	}
+	//}
+	return nil // TODO(OREN)
 }
 
 // updateOrPause() wraps the update function, allowing us to check if the manager is paused in
