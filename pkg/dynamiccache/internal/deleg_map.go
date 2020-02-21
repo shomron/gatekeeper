@@ -91,6 +91,19 @@ func (m *InformersMap) Get(gvk schema.GroupVersionKind, obj runtime.Object) (boo
 	return m.structured.Get(gvk, obj)
 }
 
+// Remove will remove an new Informer from the InformersMap and stop it if it exists.
+func (m *InformersMap) Remove(gvk schema.GroupVersionKind, obj runtime.Object) {
+	_, isUnstructured := obj.(*unstructured.Unstructured)
+	_, isUnstructuredList := obj.(*unstructured.UnstructuredList)
+	isUnstructured = isUnstructured || isUnstructuredList
+
+	if isUnstructured {
+		m.unstructured.Remove(gvk)
+	}
+
+	m.structured.Remove(gvk)
+}
+
 // newStructuredInformersMap creates a new InformersMap for structured objects.
 func newStructuredInformersMap(config *rest.Config, scheme *runtime.Scheme, mapper meta.RESTMapper, resync time.Duration, namespace string) *specificInformersMap {
 	return newSpecificInformersMap(config, scheme, mapper, resync, namespace, createStructuredListWatch)

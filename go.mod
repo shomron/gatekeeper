@@ -12,11 +12,12 @@ require (
 	github.com/go-openapi/strfmt v0.19.3 // indirect
 	github.com/go-openapi/validate v0.19.4 // indirect
 	github.com/google/go-cmp v0.3.1
-	github.com/onsi/ginkgo v1.10.1 // indirect
+	github.com/onsi/ginkgo v1.10.1
 	github.com/onsi/gomega v1.7.0
 	github.com/open-policy-agent/frameworks/constraint v0.0.0-20200205035609-98dd039a55b1
 	github.com/open-policy-agent/opa v0.16.2
 	github.com/pkg/errors v0.8.1
+	github.com/prometheus/client_golang v1.1.0 // indirect
 	go.opencensus.io v0.22.2
 	go.uber.org/zap v1.10.0
 	golang.org/x/net v0.0.0-20190827160401-ba9fcec4b297

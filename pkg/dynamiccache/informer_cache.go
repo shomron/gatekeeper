@@ -198,3 +198,14 @@ func indexByField(indexer cache.Informer, field string, extractor client.Indexer
 
 	return indexer.AddIndexers(toolscache.Indexers{internal.FieldIndexName(field): indexFunc})
 }
+
+// Remove removes an informer specified by the obj argument from the cache and stops it if it existed.
+func (ip *dynamicInformerCache) Remove(obj runtime.Object) error {
+	gvk, err := apiutil.GVKForObject(obj, ip.Scheme)
+	if err != nil {
+		return err
+	}
+
+	ip.InformersMap.Remove(gvk, obj)
+	return nil
+}

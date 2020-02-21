@@ -21,6 +21,8 @@ import (
 	"reflect"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
@@ -85,10 +87,23 @@ func newReconciler(mgr manager.Manager, opa *opa.Client, wm *watch.Manager) (rec
 	// constraintsCache contains total number of constraints and shared mutex
 	constraintsCache := constraint.NewConstraintsCache()
 
-	constraintAdder := constraint.Adder{Opa: opa, ConstraintsCache: constraintsCache}
+	// Events will be used to receive events from dynamic watches registered
+	// via the registrar below.
+	events := make(chan event.GenericEvent, 1024)
+	constraintAdder := constraint.Adder{
+		Opa:              opa,
+		ConstraintsCache: constraintsCache,
+		WatchManager:     wm,
+		Events:           events,
+	}
+	// Create subordinate controller - we will feed it events dynamically via watch
+	if err := constraintAdder.Add(mgr); err != nil {
+		return nil, fmt.Errorf("registering constraint controller: %w", err)
+	}
+
 	w, err := wm.NewRegistrar(
 		ctrlName,
-		[]watch.AddFunction{constraintAdder.Add})
+		events)
 	if err != nil {
 		return nil, err
 	}

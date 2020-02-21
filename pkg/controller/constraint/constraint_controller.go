@@ -21,6 +21,10 @@ import (
 	"strings"
 	"sync"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/go-logr/logr"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/constraints"
@@ -47,12 +51,37 @@ var (
 )
 
 const (
-	finalizerName = "finalizers.gatekeeper.sh/constraint"
+	finalizerName      = "finalizers.gatekeeper.sh/constraint"
+	constraintsGroup   = "constraints.gatekeeper.sh"
+	constraintsVersion = "v1beta1"
 )
 
 type Adder struct {
 	Opa              *opa.Client
 	ConstraintsCache *ConstraintsCache
+	WatchManager     *watch.Manager
+	Events           <-chan event.GenericEvent
+}
+
+func (a *Adder) InjectOpa(o *opa.Client) {
+	a.Opa = o
+}
+
+func (a *Adder) InjectWatchManager(w *watch.Manager) {
+	a.WatchManager = w
+}
+
+// Add creates a new Constraint Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
+// and Start it when the Manager is Started.
+func (a *Adder) Add(mgr manager.Manager) error {
+	reporter, err := newStatsReporter()
+	if err != nil {
+		log.Error(err, "StatsReporter could not start")
+		return err
+	}
+
+	r := newReconciler(mgr, a.Opa, reporter, a.ConstraintsCache)
+	return add(mgr, r, a.WatchManager, a.Events)
 }
 
 type ConstraintsCache struct {
@@ -65,54 +94,37 @@ type tags struct {
 	status            metrics.Status
 }
 
-// Add creates a new Constraint Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
-// and Start it when the Manager is Started.
-func (a *Adder) Add(mgr manager.Manager, gvk schema.GroupVersionKind, cs *watch.ControllerSwitch) error {
-	reporter, err := newStatsReporter()
-	if err != nil {
-		log.Error(err, "StatsReporter could not start")
-		return err
-	}
-
-	r := newReconciler(mgr, gvk, a.Opa, cs, reporter, a.ConstraintsCache)
-	return add(mgr, r, gvk)
-}
-
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(
 	mgr manager.Manager,
-	gvk schema.GroupVersionKind,
 	opa *opa.Client,
-	cs *watch.ControllerSwitch,
 	reporter StatsReporter,
 	constraintsCache *ConstraintsCache) reconcile.Reconciler {
 	return &ReconcileConstraint{
 		Client:           mgr.GetClient(),
-		cs:               cs,
 		scheme:           mgr.GetScheme(),
 		opa:              opa,
-		log:              log.WithValues(logging.ConstraintKind, gvk.Kind, logging.ConstraintAPIVersion, gvk.GroupVersion().String()),
-		gvk:              gvk,
+		log:              log,
 		reporter:         reporter,
 		constraintsCache: constraintsCache,
 	}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler, gvk schema.GroupVersionKind) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, w *watch.Manager, events <-chan event.GenericEvent) error {
 	// Create a new controller
-	c, err := controller.New(fmt.Sprintf("%s-constraint-controller", gvk.String()), mgr, controller.Options{Reconciler: r})
+	c, err := controller.New("constraint-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
 	}
 
 	// Watch for changes to the provided constraint
-	instance := unstructured.Unstructured{}
-	instance.SetGroupVersionKind(gvk)
-	err = c.Watch(&source.Kind{Type: &instance}, &handler.EnqueueRequestForObject{})
-	if err != nil {
-		return err
-	}
+	err = c.Watch(&source.Channel{
+		Source:         events,
+		DestBufferSize: 1024,
+	}, &handler.EnqueueRequestsFromMapFunc{
+		ToRequests: handler.ToRequestsFunc(eventPacker),
+	})
 
 	return nil
 }
@@ -122,10 +134,8 @@ var _ reconcile.Reconciler = &ReconcileConstraint{}
 // ReconcileSync reconciles an arbitrary constraint object described by Kind
 type ReconcileConstraint struct {
 	client.Client
-	cs               *watch.ControllerSwitch
 	scheme           *runtime.Scheme
 	opa              *opa.Client
-	gvk              schema.GroupVersionKind
 	log              logr.Logger
 	reporter         StatsReporter
 	constraintsCache *ConstraintsCache
@@ -136,16 +146,18 @@ type ReconcileConstraint struct {
 // Reconcile reads that state of the cluster for a constraint object and makes changes based on the state read
 // and what is in the constraint.Spec
 func (r *ReconcileConstraint) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	enabled := r.cs.Enter()
-	defer r.cs.Exit()
-	if !enabled {
-		r.log.Info("ignoring request, constraint controller disabled", "request", request)
+	gvk, unpackedRequest, err := unpackRequest(request)
+	if err != nil {
+		// Unrecoverable, do not retry.
+		// TODO(OREN) add metric
+		log.Error(err, "unpacking request", "request", request)
 		return reconcile.Result{}, nil
 	}
+	// TODO(OREN) do we need to ask the watch manager if we are registered for this kind?
+	// (relevant when sharing informers)
 	instance := &unstructured.Unstructured{}
-	instance.SetGroupVersionKind(r.gvk)
-	err := r.Get(context.TODO(), request.NamespacedName, instance)
-	if err != nil {
+	instance.SetGroupVersionKind(gvk)
+	if err := r.Get(context.TODO(), unpackedRequest.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
 			// Object not found, return.  Created objects are automatically garbage collected.
 			// For additional cleanup logic use finalizers.
@@ -346,5 +358,41 @@ func (c *ConstraintsCache) reportTotalConstraints(reporter StatsReporter) {
 				log.Error(err, "failed to report total constraints")
 			}
 		}
+	}
+}
+
+// unpackRequest unpacks the GVK from a reconcile.Request and returns the separated components.
+// Requests are expected to be in the format: {Name: "kind:_Kind_:_Name_", Namespace: _Namespace_}
+func unpackRequest(r reconcile.Request) (schema.GroupVersionKind, reconcile.Request, error) {
+	fields := strings.SplitN(r.Name, ":", 3)
+	if len(fields) != 3 || fields[0] != "kind" {
+		return schema.GroupVersionKind{}, reconcile.Request{}, fmt.Errorf("invalid packed name: %s", r.Name)
+	}
+	gvk := schema.GroupVersionKind{
+		Group:   constraintsGroup,
+		Version: constraintsVersion,
+		Kind:    fields[1],
+	}
+
+	return gvk, reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      fields[2],
+		Namespace: r.Namespace,
+	}}, nil
+}
+
+// eventPacker packs incoming events into requests with embedded GVK info so we can unpack them in reconcile.
+func eventPacker(obj handler.MapObject) []reconcile.Request {
+	if obj.Object == nil || obj.Meta == nil {
+		return nil
+	}
+	gvk := obj.Object.GetObjectKind().GroupVersionKind()
+
+	packed := fmt.Sprintf("kind:%s:%s", gvk.Kind, obj.Meta.GetName())
+	return []reconcile.Request{
+		{
+			NamespacedName: types.NamespacedName{
+				Namespace: obj.Meta.GetNamespace(),
+				Name:      packed,
+			}},
 	}
 }
