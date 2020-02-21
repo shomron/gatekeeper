@@ -171,9 +171,10 @@ func main() {
 
 	// wm.Pause() blocks until the watch manager has stopped and ensures it does
 	// not restart
-	if err := wm.Pause(); err != nil {
-		setupLog.Error(err, "could not pause watch manager, attempting cleanup anyway")
-	}
+	// TODO(OREN)!!
+	//if err := wm.Pause(); err != nil {
+	//	setupLog.Error(err, "could not pause watch manager, attempting cleanup anyway")
+	//}
 
 	// Create a fresh client to be sure RESTmapper is up-to-date
 	setupLog.Info("cleaning state...")

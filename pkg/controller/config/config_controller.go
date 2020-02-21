@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
+
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	configv1alpha1 "github.com/open-policy-agent/gatekeeper/api/v1alpha1"
 	syncc "github.com/open-policy-agent/gatekeeper/pkg/controller/sync"
@@ -85,10 +87,21 @@ func (a *Adder) InjectWatchManager(wm *watch.Manager) {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager, opa *opa.Client, wm *watch.Manager) (reconcile.Reconciler, error) {
-	syncAdder := syncc.Adder{Opa: opa}
+	// Events will be used to receive events from dynamic watches registered
+	// via the registrar below.
+	events := make(chan event.GenericEvent, 1024)
+	syncAdder := syncc.Adder{
+		Opa:    opa,
+		Events: events,
+	}
+	// Create subordinate controller - we will feed it events dynamically via watch
+	if err := syncAdder.Add(mgr); err != nil {
+		return nil, fmt.Errorf("registering sync controller: %w", err)
+	}
+
 	w, err := wm.NewRegistrar(
 		ctrlName,
-		[]watch.AddFunction{syncAdder.Add})
+		events)
 	if err != nil {
 		return nil, err
 	}
@@ -179,12 +192,13 @@ func (r *ReconcileConfig) Reconcile(request reconcile.Request) (reconcile.Result
 	}
 	if !r.watched.Equals(newSyncOnly) {
 		// Wipe all data to avoid stale state
-		err := r.watcher.Pause()
-		defer func() {
-			if err = r.watcher.Unpause(); err != nil {
-				log.Error(err, "while unpausing watcher")
-			}
-		}()
+		// TODO(OREN)!!
+		//err := r.watcher.Pause()
+		//defer func() {
+		//	if err = r.watcher.Unpause(); err != nil {
+		//		log.Error(err, "while unpausing watcher")
+		//	}
+		//}()
 		if err != nil {
 			return reconcile.Result{}, err
 		}

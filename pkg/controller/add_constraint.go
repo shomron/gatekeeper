@@ -15,11 +15,7 @@ limitations under the License.
 
 package controller
 
-import (
-	"github.com/open-policy-agent/gatekeeper/pkg/controller/constraint"
-)
-
 func init() {
 	// AddToManagerFuncs is a list of functions to create controllers and add them to a manager.
-	Injectors = append(Injectors, &constraint.Adder{})
+	//Injectors = append(Injectors, &constraint.Adder{})
 }

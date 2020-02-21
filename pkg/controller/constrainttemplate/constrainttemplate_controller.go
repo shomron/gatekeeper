@@ -295,10 +295,6 @@ func (r *ReconcileConstraintTemplate) handleCreate(
 	if err := r.metrics.reportIngestDuration(metrics.ActiveStatus, time.Since(beginCompile)); err != nil {
 		log.Error(err, "failed to report constraint template ingestion duration")
 	}
-	log.Info("adding to watcher registry")
-	if err := r.watcher.AddWatch(makeGvk(instance.Spec.CRD.Spec.Names.Kind)); err != nil {
-		return reconcile.Result{}, err
-	}
 	// To support HA deployments, only one pod should be able to create CRDs
 	log.Info("creating constraint CRD")
 	crdv1beta1 := &apiextensionsv1beta1.CustomResourceDefinition{}
@@ -320,6 +316,10 @@ func (r *ReconcileConstraintTemplate) handleCreate(
 	instance.Status.Created = true
 	if err := r.Status().Update(context.Background(), instance); err != nil {
 		return reconcile.Result{Requeue: true}, nil
+	}
+	log.Info("adding to watcher registry")
+	if err := r.watcher.AddWatch(makeGvk(instance.Spec.CRD.Spec.Names.Kind)); err != nil {
+		return reconcile.Result{}, err
 	}
 	return reconcile.Result{}, nil
 }

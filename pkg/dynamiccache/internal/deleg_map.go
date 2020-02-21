@@ -97,11 +97,12 @@ func (m *InformersMap) Remove(gvk schema.GroupVersionKind, obj runtime.Object) {
 	_, isUnstructuredList := obj.(*unstructured.UnstructuredList)
 	isUnstructured = isUnstructured || isUnstructuredList
 
-	if isUnstructured {
+	switch {
+	case isUnstructured:
 		m.unstructured.Remove(gvk)
+	default:
+		m.structured.Remove(gvk)
 	}
-
-	m.structured.Remove(gvk)
 }
 
 // newStructuredInformersMap creates a new InformersMap for structured objects.

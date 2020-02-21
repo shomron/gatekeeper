@@ -17,13 +17,10 @@ package constraint
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"sync"
 
 	"sigs.k8s.io/controller-runtime/pkg/event"
-
-	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/go-logr/logr"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
@@ -36,7 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -119,12 +115,13 @@ func add(mgr manager.Manager, r reconcile.Reconciler, w *watch.Manager, events <
 	}
 
 	// Watch for changes to the provided constraint
-	err = c.Watch(&source.Channel{
-		Source:         events,
-		DestBufferSize: 1024,
-	}, &handler.EnqueueRequestsFromMapFunc{
-		ToRequests: handler.ToRequestsFunc(eventPacker),
-	})
+	err = c.Watch(
+		&source.Channel{
+			Source:         events,
+			DestBufferSize: 1024,
+		},
+		&handler.EnqueueRequestsFromMapFunc{ToRequests: util.EventPacker{}},
+	)
 
 	return nil
 }
@@ -146,11 +143,17 @@ type ReconcileConstraint struct {
 // Reconcile reads that state of the cluster for a constraint object and makes changes based on the state read
 // and what is in the constraint.Spec
 func (r *ReconcileConstraint) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	gvk, unpackedRequest, err := unpackRequest(request)
+	gvk, unpackedRequest, err := util.UnpackRequest(request)
 	if err != nil {
 		// Unrecoverable, do not retry.
 		// TODO(OREN) add metric
 		log.Error(err, "unpacking request", "request", request)
+		return reconcile.Result{}, nil
+	}
+	// Sanity - make sure it is a constraint resource.
+	if gvk.Group != constraintsGroup || gvk.Version != constraintsVersion {
+		// Unrecoverable, do not retry.
+		log.Error(err, "invalid constraint GroupVersion", "gvk", gvk)
 		return reconcile.Result{}, nil
 	}
 	// TODO(OREN) do we need to ask the watch manager if we are registered for this kind?
@@ -358,41 +361,5 @@ func (c *ConstraintsCache) reportTotalConstraints(reporter StatsReporter) {
 				log.Error(err, "failed to report total constraints")
 			}
 		}
-	}
-}
-
-// unpackRequest unpacks the GVK from a reconcile.Request and returns the separated components.
-// Requests are expected to be in the format: {Name: "kind:_Kind_:_Name_", Namespace: _Namespace_}
-func unpackRequest(r reconcile.Request) (schema.GroupVersionKind, reconcile.Request, error) {
-	fields := strings.SplitN(r.Name, ":", 3)
-	if len(fields) != 3 || fields[0] != "kind" {
-		return schema.GroupVersionKind{}, reconcile.Request{}, fmt.Errorf("invalid packed name: %s", r.Name)
-	}
-	gvk := schema.GroupVersionKind{
-		Group:   constraintsGroup,
-		Version: constraintsVersion,
-		Kind:    fields[1],
-	}
-
-	return gvk, reconcile.Request{NamespacedName: types.NamespacedName{
-		Name:      fields[2],
-		Namespace: r.Namespace,
-	}}, nil
-}
-
-// eventPacker packs incoming events into requests with embedded GVK info so we can unpack them in reconcile.
-func eventPacker(obj handler.MapObject) []reconcile.Request {
-	if obj.Object == nil || obj.Meta == nil {
-		return nil
-	}
-	gvk := obj.Object.GetObjectKind().GroupVersionKind()
-
-	packed := fmt.Sprintf("kind:%s:%s", gvk.Kind, obj.Meta.GetName())
-	return []reconcile.Request{
-		{
-			NamespacedName: types.NamespacedName{
-				Namespace: obj.Meta.GetNamespace(),
-				Name:      packed,
-			}},
 	}
 }

@@ -1,9 +1,14 @@
 package watch
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/sync/errgroup"
+
+	"k8s.io/apimachinery/pkg/api/meta"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -34,6 +39,9 @@ type Manager struct {
 	watchedMux   sync.Mutex
 	watchedKinds vitalsByGVK
 	metrics      *reporter
+
+	// Events are passed internally from informer event handlers to handleEvents for distribution.
+	events chan interface{}
 }
 
 type AddFunction func(manager.Manager) error
@@ -47,8 +55,9 @@ func New(mgr manager.Manager, cfg *rest.Config) (*Manager, error) {
 		mgr:          mgr,
 		stopper:      func() {},
 		managedKinds: newRecordKeeper(),
-		watchedKinds: make(map[schema.GroupVersionKind]vitals),
+		watchedKinds: make(vitalsByGVK),
 		metrics:      metrics,
+		events:       make(chan interface{}, 1024), // TODO(OREN)
 	}
 	wm.started.Store(false)
 	wm.managedKinds.mgr = wm
@@ -59,11 +68,26 @@ func (wm *Manager) NewRegistrar(parent string, events chan<- event.GenericEvent)
 	return wm.managedKinds.NewRegistrar(parent, events)
 }
 
-// Start looks for changes to the watch roster every 5 seconds. This method has a
-// benefit compared to restarting the manager every time a controller changes the watch
-// of placing an upper bound on how often the manager restarts.
+// Start runs the watch manager, processing events received from dynamic informers and distributing them
+// to registrars.
 func (wm *Manager) Start(done <-chan struct{}) error {
-	return nil // TODO(OREN)
+	wm.stopped = make(chan struct{})
+	grp, ctx := errgroup.WithContext(context.Background())
+	grp.Go(func() error {
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+		// Unblock any informer event handlers
+		close(wm.stopped)
+		return context.Canceled
+	})
+	grp.Go(func() error {
+		wm.eventLoop(ctx.Done())
+		return context.Canceled
+	})
+	_ = grp.Wait()
+	return nil
 }
 
 func (wm *Manager) close() {
@@ -97,14 +121,15 @@ func (wm *Manager) doAddWatch(gvk schema.GroupVersionKind) error {
 	}
 
 	// Prep for marking as managed below
-	// TODO(OREN): Simplify
 	m := wm.managedKinds.Get() // Not a deadlock but beware if assumptions change...
 	if _, ok := m[gvk]; !ok {
 		return fmt.Errorf("could not mark %+v as managed", gvk)
 	}
 
-	// TODO(OREN) - will this map correctly to unstructured/structured informers?
-	informer, err := wm.mgr.GetCache().GetInformerForKind(gvk)
+	// TODO(OREN) - should we support structured dynamic watches (using GetInformerForKind?)
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(gvk)
+	informer, err := wm.mgr.GetCache().GetInformer(u)
 	if err != nil {
 		// This is expected to fail if a CRD is unregistered.
 		return fmt.Errorf("getting informer for kind: %+v %w", gvk, err)
@@ -183,15 +208,96 @@ func (wm *Manager) replaceWatches() error {
 
 // OnAdd implements cache.ResourceEventHandler. Called by informers.
 func (wm *Manager) OnAdd(obj interface{}) {
-	// TODO(OREN) Distribute to registrar channels
+	// Send event to eventLoop() for processing
+	select {
+	case wm.events <- obj:
+	case <-wm.stopped:
+	}
 }
 
 // OnUpdate implements cache.ResourceEventHandler. Called by informers.
 func (wm *Manager) OnUpdate(oldObj, newObj interface{}) {
-	// TODO(OREN) Distribute to registrar channels
+	// Send event to eventLoop() for processing
+	select {
+	case wm.events <- oldObj:
+	case <-wm.stopped:
+	}
+	select {
+	case wm.events <- newObj:
+	case <-wm.stopped:
+	}
 }
 
 // OnDelete implements cache.ResourceEventHandler. Called by informers.
 func (wm *Manager) OnDelete(obj interface{}) {
-	// TODO(OREN) Distribute to registrar channels
+	// Send event to eventLoop() for processing
+	select {
+	case wm.events <- obj:
+	case <-wm.stopped:
+	}
+}
+
+// eventLoop receives events from informer callbacks and distributes them to registrars.
+func (wm *Manager) eventLoop(stop <-chan struct{}) {
+	for {
+		select {
+		case e, ok := <-wm.events:
+			if !ok {
+				return
+			}
+			wm.distributeEvent(stop, e)
+		case <-stop:
+			return
+		}
+	}
+}
+
+// distributeEvent distributes a single event to all registrars listening for that resource kind.
+func (wm *Manager) distributeEvent(stop <-chan struct{}, obj interface{}) {
+	o, ok := obj.(runtime.Object)
+	if !ok || o == nil {
+		// Invalid object, drop it
+		return
+	}
+	gvk := o.GetObjectKind().GroupVersionKind()
+	acc, err := meta.Accessor(o)
+	if err != nil {
+		// Invalid object, drop it
+		return
+	}
+	e := event.GenericEvent{
+		Meta:   acc,
+		Object: o,
+	}
+
+	// Critical lock section
+	var watchers []chan<- event.GenericEvent
+	func() {
+		wm.watchedMux.Lock()
+		defer wm.watchedMux.Unlock()
+
+		r, ok := wm.watchedKinds[gvk]
+		if !ok {
+			// Nobody is watching, drop it
+			return
+		}
+
+		// TODO(OREN) reduce allocations here
+		watchers = make([]chan<- event.GenericEvent, 0, len(r.registrars))
+		for w := range r.registrars {
+			if w.events == nil {
+				continue
+			}
+			watchers = append(watchers, w.events)
+		}
+	}()
+
+	// Distribute the event
+	for _, w := range watchers {
+		select {
+		case w <- e:
+		// TODO(OREN) add timeout
+		case <-stop:
+		}
+	}
 }
