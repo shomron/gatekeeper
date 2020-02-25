@@ -21,8 +21,6 @@ import (
 	"reflect"
 	"time"
 
-	"sigs.k8s.io/controller-runtime/pkg/event"
-
 	"github.com/open-policy-agent/frameworks/constraint/pkg/apis/templates/v1beta1"
 	opa "github.com/open-policy-agent/frameworks/constraint/pkg/client"
 	"github.com/open-policy-agent/frameworks/constraint/pkg/core/templates"
@@ -45,6 +43,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"

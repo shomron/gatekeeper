@@ -17,6 +17,9 @@ type vitals struct {
 type vitalsByGVK map[schema.GroupVersionKind]vitals
 
 func (w *vitals) merge(wv vitals) vitals {
+	if w == nil {
+		return wv
+	}
 	registrars := make(map[*Registrar]bool)
 	for r := range w.registrars {
 		registrars[r] = true
@@ -137,7 +140,7 @@ func (r *Registrar) AddWatch(gvk schema.GroupVersionKind) error {
 		registrars: map[*Registrar]bool{r: true},
 	}
 	r.managedKinds.Update(r.parentName, vitalsByGVK{gvk: wv})
-	return r.mgr.addWatch(gvk)
+	return r.mgr.addWatch(r, gvk)
 }
 
 func (r *Registrar) ReplaceWatch(gvks []schema.GroupVersionKind) error {
@@ -150,7 +153,7 @@ func (r *Registrar) ReplaceWatch(gvks []schema.GroupVersionKind) error {
 		roster[gvk] = wv
 	}
 	r.managedKinds.ReplaceRegistrarRoster(r, roster)
-	return nil
+	return r.mgr.replaceWatches(r)
 }
 
 func (r *Registrar) RemoveWatch(gvk schema.GroupVersionKind) error {

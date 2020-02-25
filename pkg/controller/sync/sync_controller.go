@@ -119,12 +119,6 @@ func (r *ReconcileSync) Reconcile(request reconcile.Request) (reconcile.Result, 
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
 	}
-	// For some reason 'Status' objects corresponding to rejection messages are being pushed
-	// TODO(OREN) - validate against registrar?
-	//if instance.GroupVersionKind() != r.gvk {
-	//	r.log.Info("ignoring unexpected data", "data", instance)
-	//	return reconcile.Result{}, nil
-	//}
 
 	if !instance.GetDeletionTimestamp().IsZero() {
 		if _, err := r.opa.RemoveData(context.Background(), instance); err != nil {

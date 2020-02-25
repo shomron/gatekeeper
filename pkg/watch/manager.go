@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+
 	"golang.org/x/sync/errgroup"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -106,38 +108,107 @@ func (wm *Manager) GetManagedGVK() []schema.GroupVersionKind {
 	return wm.managedKinds.GetGVK()
 }
 
-func (wm *Manager) addWatch(gvk schema.GroupVersionKind) error {
+func (wm *Manager) addWatch(r *Registrar, gvk schema.GroupVersionKind) error {
 	wm.watchedMux.Lock()
 	defer wm.watchedMux.Unlock()
-	return wm.doAddWatch(gvk)
+	return wm.doAddWatch(r, gvk)
 }
 
-func (wm *Manager) doAddWatch(gvk schema.GroupVersionKind) error {
+func (wm *Manager) doAddWatch(r *Registrar, gvk schema.GroupVersionKind) error {
 	// lock acquired by caller
 
-	if _, ok := wm.watchedKinds[gvk]; ok {
-		// Already watching.
-		return nil
+	if r == nil {
+		return fmt.Errorf("nil registrar cannot watch")
 	}
 
-	// Prep for marking as managed below
+	// watchers is everyone who is *already* watching.
+	watchers := wm.watchedKinds[gvk]
+
+	// m is everyone who *wants* to watch.
 	m := wm.managedKinds.Get() // Not a deadlock but beware if assumptions change...
 	if _, ok := m[gvk]; !ok {
 		return fmt.Errorf("could not mark %+v as managed", gvk)
+	}
+
+	// Sanity
+	if !m[gvk].registrars[r] {
+		return fmt.Errorf("registrar %s not in desired watch set", r.parentName)
+	}
+
+	if watchers.registrars[r] {
+		// Already watching.
+		return nil
 	}
 
 	// TODO(OREN) - should we support structured dynamic watches (using GetInformerForKind?)
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
 	informer, err := wm.mgr.GetCache().GetInformer(u)
-	if err != nil {
+	if err != nil || informer == nil {
 		// This is expected to fail if a CRD is unregistered.
 		return fmt.Errorf("getting informer for kind: %+v %w", gvk, err)
 	}
-	informer.AddEventHandler(wm)
 
-	// Mark it as watched TODO(OREN) simplify
-	wm.watchedKinds[gvk] = m[gvk]
+	switch {
+	case len(watchers.registrars) > 0:
+		// Someone else was watching, replay events in the cache to the new watcher.
+		if err := wm.replayEvents(r, gvk); err != nil {
+			return fmt.Errorf("replaying events to %s: %w", r.parentName, err)
+		}
+	default:
+		// First watcher gets a fresh informer, register for events.
+		informer.AddEventHandler(wm)
+	}
+
+	// Mark it as watched.
+	wv := vitals{
+		gvk:        gvk,
+		registrars: map[*Registrar]bool{r: true},
+	}
+	wm.watchedKinds[gvk] = watchers.merge(wv)
+	return nil
+}
+
+// replayEvents replays all resources of type gvk currently in the cache to the requested registrar.
+// This is called when a registrar begins watching an existing informer.
+func (wm *Manager) replayEvents(r *Registrar, gvk schema.GroupVersionKind) error {
+	var c cache.Cache
+	if c = wm.mgr.GetCache(); c == nil {
+		return fmt.Errorf("nil cache")
+	}
+	if r == nil {
+		return fmt.Errorf("nil registrar")
+	}
+	if r.events == nil {
+		return fmt.Errorf("registrar has no events channel")
+	}
+
+	lst := &unstructured.UnstructuredList{}
+	lst.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    gvk.Kind + "List",
+	})
+	if err := c.List(context.TODO(), lst); err != nil {
+		return fmt.Errorf("listing resources %+v: %w", gvk, err)
+	}
+	for _, o := range lst.Items {
+		o := o
+		acc, err := meta.Accessor(&o)
+		if err != nil {
+			// Invalid object, drop it
+			continue
+		}
+		e := event.GenericEvent{
+			Meta:   acc,
+			Object: &o,
+		}
+		select {
+		case r.events <- e:
+		case <-wm.stopped:
+			return context.Canceled
+		}
+	}
 	return nil
 }
 
@@ -156,7 +227,7 @@ func (wm *Manager) doRemoveWatch(gvk schema.GroupVersionKind) error {
 
 	if _, ok := wm.watchedKinds[gvk]; !ok {
 		// Not watching.
-		return fmt.Errorf("not watching: %+v", gvk)
+		return nil
 	}
 
 	// Skip if there are additional watchers that would prevent us from removing it
@@ -174,14 +245,14 @@ func (wm *Manager) doRemoveWatch(gvk schema.GroupVersionKind) error {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
 	if err := rc.Remove(u); err != nil {
-		return fmt.Errorf("removing %+v %w", gvk, err)
+		return fmt.Errorf("removing %+v: %w", gvk, err)
 	}
 	delete(wm.watchedKinds, gvk)
 	return nil
 }
 
 // replaceWatches ensures all and only desired watches are running.
-func (wm *Manager) replaceWatches() error {
+func (wm *Manager) replaceWatches(r *Registrar) error {
 	wm.watchedMux.Lock()
 	defer wm.watchedMux.Unlock()
 
@@ -198,7 +269,7 @@ func (wm *Manager) replaceWatches() error {
 	for gvk := range desired {
 		if _, ok := wm.watchedKinds[gvk]; !ok {
 			// TODO(OREN) aggregate errors instead of aborting
-			if err := wm.doAddWatch(gvk); err != nil {
+			if err := wm.doAddWatch(r, gvk); err != nil {
 				return fmt.Errorf("adding watch for %+v %w", err)
 			}
 		}
