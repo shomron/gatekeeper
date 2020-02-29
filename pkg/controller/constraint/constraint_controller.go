@@ -46,9 +46,8 @@ var (
 )
 
 const (
-	finalizerName      = "finalizers.gatekeeper.sh/constraint"
-	constraintsGroup   = "constraints.gatekeeper.sh"
-	constraintsVersion = "v1beta1"
+	finalizerName    = "finalizers.gatekeeper.sh/constraint"
+	constraintsGroup = "constraints.gatekeeper.sh"
 )
 
 type Adder struct {
@@ -150,7 +149,7 @@ func (r *ReconcileConstraint) Reconcile(request reconcile.Request) (reconcile.Re
 		return reconcile.Result{}, nil
 	}
 	// Sanity - make sure it is a constraint resource.
-	if gvk.Group != constraintsGroup || gvk.Version != constraintsVersion {
+	if gvk.Group != constraintsGroup {
 		// Unrecoverable, do not retry.
 		log.Error(err, "invalid constraint GroupVersion", "gvk", gvk)
 		return reconcile.Result{}, nil
