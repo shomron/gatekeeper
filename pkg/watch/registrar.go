@@ -33,6 +33,17 @@ func (w *vitals) merge(wv vitals) vitals {
 	}
 }
 
+func (w *vitals) clone() vitals {
+	r := make(map[*Registrar]bool)
+	for k, v := range w.registrars {
+		r[k] = v
+	}
+	return vitals{
+		gvk:        w.gvk,
+		registrars: r,
+	}
+}
+
 // recordKeeper holds the source of truth for the intended state of the manager
 // This is essentially a read/write lock on the wrapped map (the `intent` variable)
 type recordKeeper struct {

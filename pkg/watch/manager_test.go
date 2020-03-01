@@ -1,3 +1,5 @@
+// +build disabled
+
 package watch
 
 import (
@@ -19,18 +21,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
 
-func newForTest(fn func(*rest.Config) (Discovery, error)) (*Manager, error) {
+func newForTest() (*Manager, error) {
 	metrics, err := newStatsReporter()
 	if err != nil {
 		return nil, err
 	}
 	wm := &Manager{
-		newMgrFn:     newFakeMgr,
 		stopper:      func() {},
 		managedKinds: newRecordKeeper(),
 		watchedKinds: make(map[schema.GroupVersionKind]vitals),
-		cfg:          nil,
-		newDiscovery: fn,
 		metrics:      metrics,
 	}
 	wm.managedKinds.mgr = wm
@@ -151,7 +150,7 @@ func waitForWatchManagerStart(wm *Manager) bool {
 }
 
 func TestRegistrar(t *testing.T) {
-	wm, err := newForTest(newDiscoveryFactory(false, "FooCRD"))
+	wm, err := newForTest()
 	if err != nil {
 		t.Fatalf("Error creating Manager: %s", err)
 	}

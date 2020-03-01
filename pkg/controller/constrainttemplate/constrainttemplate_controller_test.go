@@ -89,7 +89,7 @@ violation[{"msg": "denied!"}] {
 	ctrl.SetLogger(zap.Logger(true))
 	mgr, err := manager.New(cfg, manager.Options{MetricsBindAddress: "0"})
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	wm, err := watch.New(mgr.GetConfig())
+	wm, err := watch.New(mgr.GetCache())
 	if err != nil {
 		t.Fatalf("could not create watch manager: %s", err)
 	}

@@ -126,19 +126,8 @@ type specificInformersMap struct {
 // either individually (via the entry's stop channel) or globally
 // via the provided stop argument.
 func (e *MapEntry) Start(stop <-chan struct{}) {
-	internalStop := make(chan struct{})
-
-	go func() {
-		select {
-		case <-stop:
-			// stop signals all informers in the map should stop
-			close(internalStop)
-		case <-e.stop:
-			// e.Stop signals just this informer should stop
-			close(internalStop)
-		}
-	}()
-
+	// Stop on either the whole map stopping or just this informer being removed.
+	internalStop := eitherChan(stop, e.stop)
 	e.Informer.Run(internalStop)
 }
 
@@ -204,7 +193,8 @@ func (ip *specificInformersMap) Get(gvk schema.GroupVersionKind, obj runtime.Obj
 
 	if started && !i.Informer.HasSynced() {
 		// Wait for it to sync before returning the Informer so that folks don't read from a stale cache.
-		if !cache.WaitForCacheSync(ip.stop, i.Informer.HasSynced) {
+		syncStop := eitherChan(ip.stop, i.stop)
+		if !cache.WaitForCacheSync(syncStop, i.Informer.HasSynced) {
 			return started, nil, fmt.Errorf("failed waiting for %T Informer to sync", obj)
 		}
 	}
@@ -339,4 +329,18 @@ func resyncPeriod(resync time.Duration) func() time.Duration {
 		factor := rand.Float64()/5.0 + 0.9
 		return time.Duration(float64(resync.Nanoseconds()) * factor)
 	}
+}
+
+// eitherChan returns a channel that is closed when either of the input channels are signaled.
+func eitherChan(a, b <-chan struct{}) <-chan struct{} {
+	out := make(chan struct{})
+	go func() {
+		defer close(out)
+		select {
+		case <-a:
+		case <-b:
+		}
+	}()
+
+	return out
 }
