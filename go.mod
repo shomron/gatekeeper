@@ -26,3 +26,5 @@ require (
 	k8s.io/client-go v0.17.2
 	sigs.k8s.io/controller-runtime v0.5.0
 )
+
+replace github.com/open-policy-agent/frameworks/constraint => github.com/shomron/frameworks/constraint v0.0.0-20200305154620-5d5606f99553
